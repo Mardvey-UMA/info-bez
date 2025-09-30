@@ -12,6 +12,7 @@ case class Unchanged(path: String, hash: Int) extends FileState
 case class Modified(path: String, oldHash: Int, newHash: Int) extends FileState
 case class Deleted(path: String, oldHash: Int) extends FileState
 case class Added(path: String, newHash: Int) extends FileState
+case class Renamed(oldPath: String, newPath: String, hash: Int) extends FileState
 case class ErrorFile(path: String, error: String) extends FileState
 case class EmptyFile(path: String) extends FileState
 
@@ -57,22 +58,94 @@ trait HtmlGenerator {
     def colorize(color: String): String = s"""<span style="color: $color;">$s</span>"""
   }
 
+  case class DirectoryNode(name: String, files: List[FileState], subdirs: Map[String, DirectoryNode])
+
+  def buildDirectoryTree(results: Seq[FileState]): DirectoryNode = {
+    def insertIntoTree(node: DirectoryNode, pathParts: List[String], state: FileState): DirectoryNode = {
+      pathParts match {
+        case Nil => node
+        case fileName :: Nil =>
+          node.copy(files = state :: node.files)
+        case dirName :: rest =>
+          val subdir = node.subdirs.getOrElse(dirName, DirectoryNode(dirName, List.empty, Map.empty))
+          val updatedSubdir = insertIntoTree(subdir, rest, state)
+          node.copy(subdirs = node.subdirs + (dirName -> updatedSubdir))
+      }
+    }
+
+    val root = DirectoryNode("root", List.empty, Map.empty)
+    results.foldLeft(root) { (tree, state) =>
+      val path = state match {
+        case Unchanged(p, _) => p
+        case Modified(p, _, _) => p
+        case Deleted(p, _) => p
+        case Added(p, _) => p
+        case Renamed(_, newP, _) => newP
+        case ErrorFile(p, _) => p
+        case EmptyFile(p) => p
+      }
+      val pathParts = path.split('/').toList
+      insertIntoTree(tree, pathParts, state)
+    }
+  }
+
+  def renderDirectoryTree(node: DirectoryNode, level: Int = 0): String = {
+    val indent = "&nbsp;&nbsp;&nbsp;&nbsp;" * level
+    val dirHeader = if (level > 0) {
+      s"""<div style="margin-top: 10px; font-weight: bold; color: #333;">$indent📁 ${node.name}</div>"""
+    } else {
+      ""
+    }
+
+    val filesHtml = node.files.sortBy {
+      case Unchanged(p, _) => p
+      case Modified(p, _, _) => p
+      case Deleted(p, _) => p
+      case Added(p, _) => p
+      case Renamed(_, newP, _) => newP
+      case ErrorFile(p, _) => p
+      case EmptyFile(p) => p
+    }.map { state =>
+      val fileName = state match {
+        case Unchanged(p, _) => p.split('/').last
+        case Modified(p, _, _) => p.split('/').last
+        case Deleted(p, _) => p.split('/').last
+        case Added(p, _) => p.split('/').last
+        case Renamed(oldP, newP, _) => s"${oldP.split('/').last} → ${newP.split('/').last}"
+        case ErrorFile(p, _) => p.split('/').last
+        case EmptyFile(p) => p.split('/').last
+      }
+
+      val content = state match {
+        case Unchanged(_, _) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;✓ $fileName".withClass("unchanged").colorize("green")
+        case Modified(_, old, neu) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;⚠ $fileName [хэш изменился: $old → $neu]".withClass("modified").colorize("orange")
+        case Deleted(_, _) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;✗ $fileName".withClass("deleted").colorize("red")
+        case Added(_, _) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;+ $fileName".withClass("added").colorize("blue")
+        case Renamed(oldP, newP, _) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;↻ Переименован".withClass("renamed").colorize("purple")
+        case ErrorFile(_, error) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;⚡ $fileName [$error]".withClass("error").colorize("darkred")
+        case EmptyFile(_) =>
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;○ $fileName [пустой файл]".withClass("empty").colorize("gray")
+      }
+      content.wrapTag("div")
+    }.mkString("\n")
+
+    val subdirsHtml = node.subdirs.toSeq.sortBy(_._1).map { case (_, subdir) =>
+      renderDirectoryTree(subdir, level + 1)
+    }.mkString("\n")
+
+    dirHeader + filesHtml + subdirsHtml
+  }
+
   def generateHtml(results: Seq[FileState]): String = {
     val timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
-    val content = results.map {
-      case Unchanged(path, _) =>
-        s"✓ $path".withClass("unchanged").colorize("green")
-      case Modified(path, old, neu) =>
-        s"⚠ $path [хэш изменился: $old → $neu]".withClass("modified").colorize("orange")
-      case Deleted(path, _) =>
-        s"✗ $path".withClass("deleted").colorize("red")
-      case Added(path, _) =>
-        s"+ $path".withClass("added").colorize("blue")
-      case ErrorFile(path, error) =>
-        s"⚡ $path [$error]".withClass("error").colorize("darkred")
-      case EmptyFile(path) =>
-        s"○ $path [пустой файл]".withClass("empty").colorize("gray")
-    }.map(_.wrapTag("div")).mkString("\n")
+    val tree = buildDirectoryTree(results)
+    val content = renderDirectoryTree(tree)
 
     s"""
        |<!DOCTYPE html>
@@ -90,14 +163,15 @@ trait HtmlGenerator {
        |    .modified { background: #fff3cd; }
        |    .deleted { background: #ffe6e6; }
        |    .added { background: #e6f3ff; }
+       |    .renamed { background: #f3e6ff; }
        |    .error { background: #ffcccc; }
        |    .empty { background: #f0f0f0; }
        |  </style>
        |</head>
        |<body>
        |  <div class="container">
-       |    <div class="header">Отчёт ревизора диска</div>
-       |    <div class="timestamp">Время проверки: $timestamp</div>
+       |    <div class="header">📋 Отчёт ревизора диска</div>
+       |    <div class="timestamp">🕐 Время проверки: $timestamp</div>
        |    <hr>
        |    $content
        |  </div>
@@ -109,11 +183,10 @@ trait HtmlGenerator {
 
 object DiskAuditor extends App with HtmlGenerator {
 
+  private val OUTPUT_DIR_NAME = "disk_auditor_reports"
   private val HASH_FILE_NAME = "hash-codes.json"
   private val REPORT_FILE_NAME = "audit-report.html"
-  private val BATCH_SIZE = 100
-  private val processedFiles = new AtomicInteger(0)
-  private val totalFiles = new AtomicInteger(0)
+  private val TEXT_REPORT_NAME = "audit-report.txt"
 
   object JsonHelper {
     def toJson(files: Map[String, FileInfo]): String = {
@@ -129,7 +202,7 @@ object DiskAuditor extends App with HtmlGenerator {
     }
 
     def fromJson(json: String): Map[String, FileInfo] = {
-      val pattern = """"([^"]+)":\s*\{\s*"hash":\s*(\d+),\s*"size":\s*(\d+),\s*"lastModified":\s*"([^"]+)"\s*\}""".r
+      val pattern = """"([^"]+)":\s*\{\s*"hash":\s*(-?\d+),\s*"size":\s*(\d+),\s*"lastModified":\s*"([^"]+)"\s*\}""".r
       pattern.findAllMatchIn(json).map { m =>
         val path = m.group(1)
         val info = FileInfo(path, m.group(2).toInt, m.group(3).toLong, m.group(4))
@@ -140,7 +213,9 @@ object DiskAuditor extends App with HtmlGenerator {
 
   def calculateHash(file: Path): FileOperation[Int] = {
     Try {
-      if (!Files.exists(file) || !Files.isReadable(file)) {
+      if (Files.isDirectory(file)) {
+        FileError("Это каталог")
+      } else if (!Files.exists(file) || !Files.isReadable(file)) {
         FileError(s"Файл недоступен: $file")
       } else {
         val size = Files.size(file)
@@ -193,19 +268,21 @@ object DiskAuditor extends App with HtmlGenerator {
         val entries = Files.list(dir).iterator().asScala.toList
 
         entries.flatMap { path =>
+          val fileName = path.getFileName.toString
+
           if (Files.isDirectory(path)) {
-            if (!Files.isSymbolicLink(path)) {
-              path :: walkRecursive(path, depth + 1)
+            if (fileName != OUTPUT_DIR_NAME && !Files.isSymbolicLink(path)) {
+              walkRecursive(path, depth + 1)
+            } else if (fileName == OUTPUT_DIR_NAME) {
+              println(s"$indent⚠️ Пропускаем директорию отчетов: $fileName")
+              List.empty
             } else {
-              println(s"$indent⚠️ Пропускаем символическую ссылку: ${path.getFileName}")
+              println(s"$indent⚠️ Пропускаем символическую ссылку: $fileName")
               List.empty
             }
-          } else if (!path.getFileName.toString.equals(HASH_FILE_NAME) &&
-            !path.getFileName.toString.equals(REPORT_FILE_NAME)) {
-            println(s"$indent📄 Найден файл: ${path.getFileName}")
-            List(path)
           } else {
-            List.empty
+            println(s"$indent📄 Найден файл: $fileName")
+            List(path)
           }
         }
       } catch {
@@ -228,16 +305,16 @@ object DiskAuditor extends App with HtmlGenerator {
     val errorList = TrieMap[String, String]()
     val emptyFiles = TrieMap[String, Unit]()
 
-    println("🚀 Starting file scan...")
+    println("🚀 Начинаем сканирование файлов...")
     val files = walkDirectory(root)
 
     if (files.isEmpty) {
-      println("⚠️ No files found for processing")
+      println("⚠️ Файлов для обработки не найдено")
       return Map.empty
     }
 
     val totalFilesCount = files.size
-    println(s"📊 Total files to process: $totalFilesCount")
+    println(s"📊 Всего файлов для обработки: $totalFilesCount")
 
     files.zipWithIndex.foreach { case (file, index) =>
       val relativePath = root.relativize(file).toString.replace('\\', '/')
@@ -256,7 +333,7 @@ object DiskAuditor extends App with HtmlGenerator {
           val processed = index + 1
           if (processed % 10 == 0 || processed == totalFilesCount) {
             val progress = (processed * 100) / totalFilesCount
-            println(s"📈 Progress: $processed/$totalFilesCount ($progress%)")
+            println(s"📈 Прогресс: $processed/$totalFilesCount ($progress%)")
           }
 
         case FileError(msg) =>
@@ -264,28 +341,28 @@ object DiskAuditor extends App with HtmlGenerator {
           val processed = index + 1
           if (processed % 10 == 0 || processed == totalFilesCount) {
             val progress = (processed * 100) / totalFilesCount
-            println(s"📈 Progress: $processed/$totalFilesCount ($progress%)")
+            println(s"📈 Прогресс: $processed/$totalFilesCount ($progress%)")
           }
       }
     }
 
-    println(s"🏁 Scan completed. Total files processed: ${resultMap.size}")
+    println(s"🏁 Сканирование завершено. Обработано файлов: ${resultMap.size}")
 
     if (errorList.nonEmpty) {
-      println(s"\n⚠️ Errors during file processing (${errorList.size}):")
+      println(s"\n⚠️ Ошибки при обработке файлов (${errorList.size}):")
       errorList.take(10).foreach { case (path, error) =>
         println(s"  - $path: $error")
       }
       if (errorList.size > 10) {
-        println(s"  ... and ${errorList.size - 10} more errors")
+        println(s"  ... и еще ${errorList.size - 10} ошибок")
       }
     }
 
     if (emptyFiles.nonEmpty) {
-      println(s"\n○ Empty files found: ${emptyFiles.size}")
+      println(s"\n○ Найдено пустых файлов: ${emptyFiles.size}")
       emptyFiles.keys.take(5).foreach(path => println(s"  - $path"))
       if (emptyFiles.size > 5) {
-        println(s"  ... and ${emptyFiles.size - 5} more empty files")
+        println(s"  ... и еще ${emptyFiles.size - 5} пустых файлов")
       }
     }
 
@@ -293,75 +370,135 @@ object DiskAuditor extends App with HtmlGenerator {
   }
 
   def compareStates(oldState: Map[String, FileInfo], newState: Map[String, FileInfo]): Seq[FileState] = {
-    val allPaths = (oldState.keySet ++ newState.keySet).toSeq.sorted
+    val oldPaths = oldState.keySet
+    val newPaths = newState.keySet
 
-    allPaths.map { path =>
-      (oldState.get(path), newState.get(path)) match {
-        case (Some(old), Some(neu)) if old.hash == neu.hash =>
-          Unchanged(path, old.hash)
-        case (Some(old), Some(neu)) =>
-          Modified(path, old.hash, neu.hash)
-        case (Some(old), None) =>
-          Deleted(path, old.hash)
-        case (None, Some(neu)) =>
-          Added(path, neu.hash)
-        case _ =>
-          ErrorFile(path, "Неизвестное состояние")
+    val oldHashToPath = oldState.groupBy(_._2.hash).map { case (hash, entries) =>
+      hash -> entries.keys.toSet
+    }
+    val newHashToPath = newState.groupBy(_._2.hash).map { case (hash, entries) =>
+      hash -> entries.keys.toSet
+    }
+
+    val renames = scala.collection.mutable.Set[(String, String, Int)]()
+    val processedOld = scala.collection.mutable.Set[String]()
+    val processedNew = scala.collection.mutable.Set[String]()
+
+    oldState.foreach { case (oldPath, oldInfo) =>
+      if (!newPaths.contains(oldPath) && oldInfo.hash != 0) {
+        newHashToPath.get(oldInfo.hash).foreach { paths =>
+          paths.foreach { newPath =>
+            if (!oldPaths.contains(newPath) && !processedNew.contains(newPath)) {
+              renames += ((oldPath, newPath, oldInfo.hash))
+              processedOld += oldPath
+              processedNew += newPath
+            }
+          }
+        }
       }
+    }
+
+    val allPaths = (oldPaths ++ newPaths).toSeq.sorted
+
+    allPaths.flatMap { path =>
+      if (processedOld.contains(path) || processedNew.contains(path)) {
+        None
+      } else {
+        (oldState.get(path), newState.get(path)) match {
+          case (Some(old), Some(neu)) if old.hash == neu.hash =>
+            Some(Unchanged(path, old.hash))
+          case (Some(old), Some(neu)) =>
+            Some(Modified(path, old.hash, neu.hash))
+          case (Some(old), None) =>
+            Some(Deleted(path, old.hash))
+          case (None, Some(neu)) =>
+            Some(Added(path, neu.hash))
+          case _ =>
+            Some(ErrorFile(path, "Неизвестное состояние"))
+        }
+      }
+    } ++ renames.map { case (oldPath, newPath, hash) =>
+      Renamed(oldPath, newPath, hash)
     }
   }
 
   def run(rootPath: String): Unit = {
     val startTime = System.currentTimeMillis()
     val root = Paths.get(rootPath).toAbsolutePath
-    val hashFile = root.resolve(HASH_FILE_NAME)
+    val outputDir = root.resolve(OUTPUT_DIR_NAME)
 
-    println(s"🔍 Disk auditor started for directory: ${root.toString}")
-    println(s"⏰ Start time: ${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}")
+    if (!Files.exists(outputDir)) {
+      Files.createDirectories(outputDir)
+      println(s"📁 Создана директория для отчетов: $outputDir")
+    }
+
+    val hashFile = outputDir.resolve(HASH_FILE_NAME)
+    val htmlReportFile = outputDir.resolve(REPORT_FILE_NAME)
+    val textReportFile = outputDir.resolve(TEXT_REPORT_NAME)
+
+    println(s"🔍 Ревизор диска запущен для директории: ${root.toString}")
+    println(s"⏰ Время начала: ${LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))}")
 
     if (Files.exists(hashFile)) {
-      println("📋 Hash file found. Starting integrity check...")
+      println("📋 Файл хэшей найден. Начинаем проверку целостности...")
 
       val oldStateJson = new String(Files.readAllBytes(hashFile))
       val oldState = JsonHelper.fromJson(oldStateJson)
-      println(s"📊 Files in database: ${oldState.size}")
+      println(s"📊 Файлов в базе данных: ${oldState.size}")
 
       val newState = scanFiles(root)
 
       val comparison = compareStates(oldState, newState)
 
       val htmlReport = generateHtml(comparison)
-      Files.write(root.resolve(REPORT_FILE_NAME), htmlReport.getBytes)
+      Files.write(htmlReportFile, htmlReport.getBytes)
 
       val textReport = comparison.map {
-        case Unchanged(path, _) => s"[OK] $path"
-        case Modified(path, _, _) => s"[MODIFIED] $path"
-        case Deleted(path, _) => s"[DELETED] $path"
-        case Added(path, _) => s"[ADDED] $path"
-        case ErrorFile(path, error) => s"[ERROR] $path: $error"
-        case EmptyFile(path) => s"[EMPTY] $path"
+        case Unchanged(path, _) => s"[БЕЗ ИЗМЕНЕНИЙ] $path"
+        case Modified(path, _, _) => s"[ИЗМЕНЕН] $path"
+        case Deleted(path, _) => s"[УДАЛЕН] $path"
+        case Added(path, _) => s"[ДОБАВЛЕН] $path"
+        case Renamed(oldPath, newPath, _) => s"[ПЕРЕИМЕНОВАН] $oldPath → $newPath"
+        case ErrorFile(path, error) => s"[ОШИБКА] $path: $error"
+        case EmptyFile(path) => s"[ПУСТОЙ] $path"
       }.mkString("\n")
 
-      Files.write(root.resolve("audit-report.txt"), textReport.getBytes)
+      Files.write(textReportFile, textReport.getBytes)
 
-      println(s"✅ Check completed. Reports saved to $REPORT_FILE_NAME and audit-report.txt")
+      val stats = comparison.groupBy(_.getClass).map { case (cls, items) =>
+        cls.getSimpleName -> items.size
+      }
+
+      println(s"\n📊 Статистика проверки:")
+      stats.toSeq.sortBy(_._1).foreach { case (status, count) =>
+        println(s"  - $status: $count")
+      }
+
+      println(s"\n✅ Проверка завершена. Отчеты сохранены:")
+      println(s"  - HTML: $htmlReportFile")
+      println(s"  - TXT: $textReportFile")
+
+      val newStateJson = JsonHelper.toJson(newState)
+      Files.write(hashFile, newStateJson.getBytes)
+      println(s"💾 База данных хэшей обновлена")
 
     } else {
-      println("🆕 First run. Creating hash database...")
+      println("🆕 Первый запуск. Создаем базу данных хэшей...")
 
       val state = scanFiles(root)
 
       if (state.nonEmpty) {
         val json = JsonHelper.toJson(state)
         Files.write(hashFile, json.getBytes)
-        println(s"✅ Hash database created. Files processed: ${state.size}")
+        println(s"✅ База данных хэшей создана. Обработано файлов: ${state.size}")
+        println(s"💾 Файл базы данных: $hashFile")
       } else {
-        println("⚠️ No files to save in database")
+        println("⚠️ Нет файлов для сохранения в базе данных")
       }
     }
 
     val elapsedTime = (System.currentTimeMillis() - startTime) / 1000.0
-    println(f"⏱️ Execution time: $elapsedTime%.2f seconds")
+    println(f"\n⏱️ Время выполнения: $elapsedTime%.2f секунд")
   }
 
   run("random_project_xOTLoKa1")

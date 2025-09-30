@@ -5,7 +5,6 @@ import scala.collection.concurrent.TrieMap
 import scala.util.{Try, Success, Failure}
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
-import java.util.concurrent.atomic.AtomicInteger
 
 sealed trait FileState
 case class Unchanged(path: String, hash: Int) extends FileState
@@ -106,30 +105,34 @@ trait HtmlGenerator {
       case ErrorFile(p, _) => p
       case EmptyFile(p) => p
     }.map { state =>
-      val fileName = state match {
-        case Unchanged(p, _) => p.split('/').last
-        case Modified(p, _, _) => p.split('/').last
-        case Deleted(p, _) => p.split('/').last
-        case Added(p, _) => p.split('/').last
-        case Renamed(oldP, newP, _) => s"${oldP.split('/').last} → ${newP.split('/').last}"
-        case ErrorFile(p, _) => p.split('/').last
-        case EmptyFile(p) => p.split('/').last
-      }
-
       val content = state match {
-        case Unchanged(_, _) =>
+        case Unchanged(path, _) =>
+          val fileName = path.split('/').last
           s"$indent&nbsp;&nbsp;&nbsp;&nbsp;✓ $fileName".withClass("unchanged").colorize("green")
-        case Modified(_, old, neu) =>
+
+        case Modified(path, old, neu) =>
+          val fileName = path.split('/').last
           s"$indent&nbsp;&nbsp;&nbsp;&nbsp;⚠ $fileName [хэш изменился: $old → $neu]".withClass("modified").colorize("orange")
-        case Deleted(_, _) =>
+
+        case Deleted(path, _) =>
+          val fileName = path.split('/').last
           s"$indent&nbsp;&nbsp;&nbsp;&nbsp;✗ $fileName".withClass("deleted").colorize("red")
-        case Added(_, _) =>
+
+        case Added(path, _) =>
+          val fileName = path.split('/').last
           s"$indent&nbsp;&nbsp;&nbsp;&nbsp;+ $fileName".withClass("added").colorize("blue")
-        case Renamed(oldP, newP, _) =>
-          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;↻ Переименован".withClass("renamed").colorize("purple")
-        case ErrorFile(_, error) =>
+
+        case Renamed(oldPath, newPath, _) =>
+          val oldFileName = oldPath.split('/').last
+          val newFileName = newPath.split('/').last
+          s"$indent&nbsp;&nbsp;&nbsp;&nbsp;↻ Переименован: $oldFileName → $newFileName".withClass("renamed").colorize("purple")
+
+        case ErrorFile(path, error) =>
+          val fileName = path.split('/').last
           s"$indent&nbsp;&nbsp;&nbsp;&nbsp;⚡ $fileName [$error]".withClass("error").colorize("darkred")
-        case EmptyFile(_) =>
+
+        case EmptyFile(path) =>
+          val fileName = path.split('/').last
           s"$indent&nbsp;&nbsp;&nbsp;&nbsp;○ $fileName [пустой файл]".withClass("empty").colorize("gray")
       }
       content.wrapTag("div")
@@ -181,7 +184,7 @@ trait HtmlGenerator {
   }
 }
 
-object DiskAuditor extends App with HtmlGenerator {
+object DiskAuditor extends HtmlGenerator {
 
   private val OUTPUT_DIR_NAME = "disk_auditor_reports"
   private val HASH_FILE_NAME = "hash-codes.json"
@@ -337,7 +340,9 @@ object DiskAuditor extends App with HtmlGenerator {
           }
 
         case FileError(msg) =>
-          errorList += (relativePath -> msg)
+          if (msg != "Это каталог") {
+            errorList += (relativePath -> msg)
+          }
           val processed = index + 1
           if (processed % 10 == 0 || processed == totalFilesCount) {
             val progress = (processed * 100) / totalFilesCount
@@ -501,5 +506,12 @@ object DiskAuditor extends App with HtmlGenerator {
     println(f"\n⏱️ Время выполнения: $elapsedTime%.2f секунд")
   }
 
-  run("random_project_xOTLoKa1")
+  def main(args: Array[String]): Unit = {
+    if (args == null || args.length == 0) {
+      println("Пожалуйста, укажите путь к директории для проверки")
+    } else {
+      val inputDir = args(0)
+      run(inputDir)
+    }
+  }
 }

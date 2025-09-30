@@ -1,14 +1,10 @@
 #!/bin/bash
 
-# create_random_structure.sh
-
-# Функция для генерации случайной строки
 random_string() {
     local length=$1
     cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w $length | head -n 1
 }
 
-# Функция для создания случайного содержимого файла
 random_content() {
     local type=$1
     case $type in
@@ -52,56 +48,43 @@ EOF
     esac
 }
 
-# Массив возможных расширений файлов
 extensions=("txt" "json" "csv" "html" "md" "sh" "log" "conf" "xml" "py")
 
-# Функция для рекурсивного создания структуры
 create_structure() {
     local current_dir=$1
     local depth=$2
     local max_depth=$3
 
-    # Создаем случайное количество файлов (от 1 до 5)
-    local num_files=$((RANDOM % 5 + 1))
+    local num_files=$((RANDOM % 7 + 1))
 
     for ((i=1; i<=num_files; i++)); do
-        # Случайное имя файла
         local filename="$(random_string 8)"
-        # Случайное расширение
         local ext=${extensions[$RANDOM % ${#extensions[@]}]}
         local filepath="$current_dir/${filename}.${ext}"
 
-        # Создаем файл со случайным содержимым
         random_content "$ext" > "$filepath"
         echo "Создан файл: $filepath"
     done
 
-    # Если не достигнута максимальная глубина, создаем поддиректории
     if [ $depth -lt $max_depth ]; then
-        # Случайное количество поддиректорий (от 0 до 3)
         local num_dirs=$((RANDOM % 4))
 
         for ((j=1; j<=num_dirs; j++)); do
-            # Случайное имя директории
             local dirname="dir_$(random_string 6)"
             local dirpath="$current_dir/$dirname"
 
             mkdir -p "$dirpath"
             echo "Создана директория: $dirpath"
 
-            # Рекурсивно создаем структуру в поддиректории
             create_structure "$dirpath" $((depth + 1)) $max_depth
         done
     fi
 }
 
-# Основная часть скрипта
 main() {
-    # Корневая директория с случайным именем
-    ROOT_DIR="random_project_$(random_string 8)"
+    ROOT_DIR="TEST_DIR"
 
-    # Максимальная глубина вложенности (от 1 до 4)
-    MAX_DEPTH=$((RANDOM % 4 + 1))
+    MAX_DEPTH=$((RANDOM % 9 + 1))
 
     echo "==================================="
     echo "Создание случайной структуры..."
@@ -109,13 +92,10 @@ main() {
     echo "Максимальная глубина: $MAX_DEPTH"
     echo "==================================="
 
-    # Создаем корневую директорию
     mkdir -p "$ROOT_DIR"
 
-    # Создаем структуру
     create_structure "$ROOT_DIR" 1 $MAX_DEPTH
 
-    # Создаем README файл в корне
     cat > "$ROOT_DIR/README.md" <<EOF
 # Random Project $(random_string 10)
 
@@ -137,9 +117,7 @@ EOF
     echo "Директория проекта: $ROOT_DIR"
     echo "==================================="
 
-    # Сохраняем имя директории в файл для последующего использования
     echo "$ROOT_DIR" > .last_random_project
 }
 
-# Запуск основной функции
 main

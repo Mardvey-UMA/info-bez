@@ -45,8 +45,6 @@ class PasswordPolicy {
     }
 }
 
-/* ---------- 3️⃣ Утилиты ---------- */
-
 private fun sha256Base62(input: String): String {
     val md = MessageDigest.getInstance("SHA-256")
     val digest = md.digest(input.toByteArray(Charsets.UTF_8))
